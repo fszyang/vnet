@@ -16,6 +16,7 @@ type Main struct {
 	ipNeighborMain
 	nodeMain
 	pgMain
+	bridgeMain
 	m4, m6   *ip.Main
 	layerMap map[Type]vnet.Layer
 }

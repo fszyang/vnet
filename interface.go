@@ -13,6 +13,7 @@ import (
 
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"time"
 )
@@ -110,7 +111,7 @@ const (
 	// Sub interface (e.g. vlan) of hardware interface.
 	SwIfKindSubInterface
 	// Sw interface for a bridge
-	SwBridgeInterface
+	SwIfKindBridgeInterface
 
 	nBuiltinSwIfKind
 
@@ -129,8 +130,8 @@ func (k SwIfKind) String() string {
 		return "SwIfKindHardware"
 	case SwIfKindSubInterface:
 		return "SwIfKindSubInterface"
-	case SwBridgeInterface:
-		return "SwBridgeInterface"
+	case SwIfKindBridgeInterface:
+		return "SwIfKindBridgeInterface"
 	case nBuiltinSwIfKind:
 		return "nBuiltinSwIfKind"
 	default:
@@ -186,6 +187,16 @@ func (si Si) GetType(v *Vnet) swInterfaceTyper {
 }
 func (si Si) SupSi(v *Vnet) Si {
 	return v.SwIf(si).supSi
+}
+func (s *Si) GetAddress(v *Vnet) (mac net.HardwareAddr) {
+	swIf := v.SwIf(*s)
+	switch swIf.kind {
+	case SwIfKindHardware:
+		mac = net.HardwareAddr(Hi(swIf.supSi).GetAddress(v))
+	case SwIfKindSubInterface:
+		mac = net.HardwareAddr(Hi(swIf.supSi).GetAddress(v))
+	}
+	return
 }
 
 type swIfFlag uint16
@@ -366,7 +377,7 @@ func (s *SwIf) builtinSwIfName(vn *Vnet) (v string) {
 		v = hw.name
 	}
 	if s.kind != SwIfKindHardware {
-		if s.kind == SwBridgeInterface {
+		if s.kind == SwIfKindBridgeInterface {
 			v = "xethbr"
 			v += fmt.Sprintf(".%d", s.id)
 		} else {

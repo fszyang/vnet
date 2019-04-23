@@ -8,6 +8,7 @@ import (
 	"github.com/platinasystems/elib/cli"
 	"github.com/platinasystems/vnet"
 	"github.com/platinasystems/vnet/ip"
+	"github.com/platinasystems/xeth"
 
 	"fmt"
 	"net"
@@ -104,6 +105,46 @@ func (m *Main) showIpNeighbor(c cli.Commander, w cli.Writer, in *cli.Input) (err
 	return
 }
 
+func (m *Main) showMac(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
+	fmt.Fprintf(w, "%20v%20v%15v%25v%20v%10v\n", "namespace", "bridgeName", "stag", "macAddr", "dev", "local")
+	v := m.Vnet
+	for _, br := range m.bridges {
+		swIf := v.SwIf(br.si)
+		stag := swIf.Id(v)
+		fmt.Fprintf(w, "%20v%20v%15v%25v%20v%10v\n",
+			xeth.Netns(br.netns), swIf.Name, stag, br.address, swIf.Name, "yes")
+		for si, _ := range br.members {
+			fmt.Fprintf(w, "%55v%25v%20v%10v\n", "", si.GetAddress(v), vnet.SiName{V: v, Si: si}, "yes")
+		}
+		fmt.Fprintf(w, "\n")
+		for mac, dev := range br.macs {
+			fmt.Fprintf(w, "%55v%25v%20v%10v\n", "", mac, dev.devName, "no")
+		}
+	}
+	return
+}
+
+func (m *Main) showBridge(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
+	fmt.Fprintf(w, "%20v%20v%15v   %-20v\n", "namespace", "bridgeName", "stag", "interfaces")
+	v := m.Vnet
+	for _, br := range m.bridges {
+		line := 0
+		swIf := v.SwIf(br.si)
+		stag := swIf.Id(v)
+		fmt.Fprintf(w, "%20v%20v%15v",
+			xeth.Netns(br.netns), swIf.Name, stag)
+		for si, _ := range br.members {
+			if line > 0 {
+				fmt.Fprintf(w, "\n%55v", "")
+			}
+			fmt.Fprintf(w, "   %-20v", vnet.SiName{V: v, Si: si})
+			line++
+		}
+		fmt.Fprintf(w, "\n")
+	}
+	return
+}
+
 func (m *Main) fdbBridgeShow(c cli.Commander, w cli.Writer, in *cli.Input) (err error) {
 	var brmPerPort map[int32]uint32
 
@@ -141,7 +182,17 @@ func (m *Main) cliInit(v *vnet.Vnet) {
 		cli.Command{
 			Name:      "show bridge",
 			ShortHelp: "help",
+			Action:    m.showBridge,
+		},
+		cli.Command{
+			Name:      "show br",
+			ShortHelp: "help",
 			Action:    m.fdbBridgeShow,
+		},
+		cli.Command{
+			Name:      "show mac",
+			ShortHelp: "help",
+			Action:    m.showMac,
 		},
 	}
 	for i := range cmds {

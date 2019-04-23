@@ -385,7 +385,7 @@ func ProcessIpNeighbor(msg *xeth.MsgNeighUpdate, v *vnet.Vnet) (err error) {
 
 	// Don't enable bridge feature yet
 	// FIXME, REMOVEME if enabling bridge
-	if !AllowBridge && si.Kind(v) == vnet.SwBridgeInterface {
+	if !AllowBridge && si.Kind(v) == vnet.SwIfKindBridgeInterface {
 		dbgfdb.Neigh.Log("Ignore, for now,  bridge neighbor for ", vnet.SiName{V: v, Si: si}, "in", ns.name)
 		return
 	}
@@ -888,6 +888,7 @@ func ProcessInterfaceInfo(msg *xeth.MsgIfinfo, action vnet.ActionType, v *vnet.V
 			dbgfdb.Ifinfo.Log("pe is nil - returning")
 			return
 		}
+
 		if msg.Net != pe.Net {
 			// This ifindex has been set into a new namespace so
 			// 1. Remove ifindex from previous namespace

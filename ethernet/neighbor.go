@@ -66,7 +66,7 @@ func (m *ipNeighborMain) AddDelIpNeighbor(im *ip.Main, n *IpNeighbor, isDel bool
 	nf := &m.ipNeighborFamilies[im.Family]
 
 	// if bridge, then rwSi is the member port to reach the DA
-	if n.Si.Kind(m.v) == vnet.SwBridgeInterface {
+	if n.Si.Kind(m.v) == vnet.SwIfKindBridgeInterface {
 		isBridge = true
 		// FIXME need to flush fib when L2 entry removed
 		br = GetBridgeBySi(n.Si)

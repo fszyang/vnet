@@ -652,7 +652,8 @@ func (ns *net_namespace) add_del_interface(m *Main, msg *netlink.IfInfoMessage) 
 func (ns *net_namespace) addDelMk1Interface(m *Main, isDel bool, ifname string, ifindex uint32, address net.HardwareAddr, devtype uint8, iflinkindex int32, vlanid uint16) (err error) {
 	dbgvnet.Adj.Logf("ns %v %v ifname %v ifindex %v address %v devtype %v iflinkindex %v vlanid %v",
 		ns.name, vnet.IsDel(isDel), ifname, ifindex, address, devtype, iflinkindex, vlanid)
-
+	fmt.Printf("ns %v %v ifname %v ifindex %v address %v devtype %v iflinkindex %v vlanid %v\n",
+		ns.name, vnet.IsDel(isDel), ifname, ifindex, address, devtype, iflinkindex, vlanid)
 	if !isDel {
 		if ns.interface_by_index == nil {
 			ns.interface_by_index = make(map[uint32]*net_namespace_interface)
@@ -698,6 +699,7 @@ func (ns *net_namespace) addDelMk1Interface(m *Main, isDel bool, ifname string, 
 			// Also filter by front-panel interfaces only with registered hwifs
 			// i.e. no hits for interfaces like lo, eth1, eth2, docker..., eth-1-0.1
 			hi, found := ns.m.m.v.HwIfByName(ifname)
+			fmt.Printf("adddelMk1Interface %v in HwIfByName %v\n", ifname, found)
 			if found {
 				hwifer := ns.m.m.v.HwIfer(hi)
 				ns.m.RegisterHwInterface(hwifer)
@@ -711,7 +713,7 @@ func (ns *net_namespace) addDelMk1Interface(m *Main, isDel bool, ifname string, 
 			m.addDelVlan(intf, iflinkindex, vlanid, isDel)
 		}
 		if !exists && devtype == xeth.XETH_DEVTYPE_LINUX_BRIDGE {
-			si := ns.m.m.v.NewSwIf(vnet.SwBridgeInterface, vnet.IfId(ifindex), intf.name)
+			si := ns.m.m.v.NewSwIf(vnet.SwIfKindBridgeInterface, vnet.IfId(ifindex), intf.name)
 			m.set_si(intf, si)
 			si.SetId(m.v, vnet.IfId(vlanid))
 
@@ -720,7 +722,9 @@ func (ns *net_namespace) addDelMk1Interface(m *Main, isDel bool, ifname string, 
 			if br != nil {
 				dbgfdb.Ifinfo.Log("Add br",
 					ifname, vlanid, ifindex, si, br.Stag, br.StationAddr)
-				m.v.BridgeAddDelHook(si, br.Stag, br.PuntIndex, br.StationAddr, true)
+				em := ethernet.GetMain(m.v)
+				em.AddBridge(br.Net, br.Stag, si, br.StationAddr, br.PuntIndex)
+				//m.v.BridgeAddDelHook(si, br.Stag, br.PuntIndex, br.StationAddr, true)
 			} else {
 				dbgfdb.Ifinfo.Log("br already exists", ifindex)
 			}
@@ -743,7 +747,9 @@ func (ns *net_namespace) addDelMk1Interface(m *Main, isDel bool, ifname string, 
 				if br != nil {
 					dbgfdb.Ifinfo.Log("Del br",
 						ifname, vlanid, ifindex, intf.si, br.Stag, br.StationAddr)
-					m.v.BridgeAddDelHook(intf.si, br.Stag, br.PuntIndex, br.StationAddr, false)
+					em := ethernet.GetMain(m.v)
+					em.DelBridge(br.Stag)
+					//m.v.BridgeAddDelHook(intf.si, br.Stag, br.PuntIndex, br.StationAddr, false)
 				} else {
 					dbgfdb.Ifinfo.Log("br not found", ifindex)
 				}

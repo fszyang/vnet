@@ -308,6 +308,7 @@ func (i *Interface) FormatId(aʹ vnet.IfId) (v string) {
 func (i *Interface) SupportsArp() {}
 
 func RegisterInterface(v *vnet.Vnet, hi HwInterfacer, config *InterfaceConfig, format string, args ...interface{}) {
+	fmt.Printf("ethernet.RegisterInterface %v\n", format)
 	i := hi.GetInterface()
 	i.InterfaceConfig = *config
 	v.RegisterAndProvisionHwInterface(hi, !config.Unprovisioned, format, args...)

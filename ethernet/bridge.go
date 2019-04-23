@@ -7,10 +7,171 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/platinasystems/elib/dep"
 	"github.com/platinasystems/vnet"
 	"github.com/platinasystems/vnet/internal/dbgvnet"
 	"github.com/platinasystems/xeth"
 )
+
+type macEntry struct {
+	si      vnet.Si
+	devName string
+}
+
+//string is the net.HwAddress, i.e. mac address, stringer
+type macMap map[string]macEntry
+
+type swBridge struct {
+	ns   xeth.Netns
+	name string
+}
+
+func (sb swBridge) isNil() bool {
+	return sb == swBridge{}
+}
+
+type memberMap map[vnet.Si]*vnet.PortEntry
+
+func (b *bridge) Validate() {
+	if b.members == nil {
+		b.members = make(map[vnet.Si]*vnet.PortEntry)
+	}
+}
+
+type bridge struct {
+	netns     uint64           //index for the linux namespace that bridge is in
+	si        vnet.Si          //bridge is a SwIf
+	puntIndex uint8            //determines punt port
+	address   net.HardwareAddr //bridge's own mac address
+	members   memberMap        //bridge members are portEntries
+	macs      macMap           //bridge have macs
+	swBridge  swBridge         //Linux bridge that bridge is a member of
+}
+
+//uint16 key is the stag
+type bridgeMap map[uint16]*bridge
+
+func (m *bridgeMain) Validate() {
+	if m.bridges == nil {
+		m.bridges = make(map[uint16]*bridge)
+	}
+}
+
+type bridgeMain struct {
+	bridges                 bridgeMap
+	bridgeAddDelHooks       BridgeAddDelHookVec
+	bridgeMemberAddDelHooks BrmAddDelHookVec
+	bridgeMemberLookup      BridgeMemberLookup_t
+}
+
+// simplified hooks for direct calls to fe1 from vnet
+type BridgeAddDelHook func(brsi vnet.Si, stag uint16, puntIndex uint8, addr net.HardwareAddr, isAdd bool) (err error)
+
+type BrmAddDelHook func(stag uint16, brmSi vnet.Si, pipe_port uint16, ctag uint16, isAdd bool, nBrm uint8) (err error)
+
+type MacAddDelHook func(mac net.HardwareAddr) (err error)
+
+type BridgeMemberLookup_t func(stag uint16, addr net.HardwareAddr) (pipe_port uint16, err error)
+
+func (m *bridgeMain) RegisterBridgeAddDelHook(h BridgeAddDelHook, dep ...*dep.Dep) {
+	m.bridgeAddDelHooks.Add(h, dep...)
+}
+func (m *bridgeMain) CallBridgeAddDelHooks(brsi vnet.Si, stag uint16, puntIndex uint8, addr net.HardwareAddr, isAdd bool) {
+	for i := range m.bridgeAddDelHooks.hooks {
+		m.bridgeAddDelHooks.Get(i)(brsi, stag, puntIndex, addr, isAdd)
+	}
+}
+
+func (m *bridgeMain) RegisterBridgeMemberAddDelHook(h BrmAddDelHook, dep ...*dep.Dep) {
+	m.bridgeMemberAddDelHooks.Add(h, dep...)
+}
+func (m *bridgeMain) CallBridgeMemberAddDelHooks(stag uint16, brmSi vnet.Si, pipe_port uint16, ctag uint16, isAdd bool, nBrm uint8) {
+	for i := range m.bridgeMemberAddDelHooks.hooks {
+		m.bridgeMemberAddDelHooks.Get(i)(stag, brmSi, pipe_port, ctag, isAdd, nBrm)
+	}
+}
+
+//FIXME.  Rather than vnet looking up member in fe1, fe1 or fdb should update the membership automatically as soon as a new member joins or leaves
+func (m *bridgeMain) RegisterBridgeMemberLookup(h BridgeMemberLookup_t) {
+	m.bridgeMemberLookup = h
+}
+
+func (m *bridgeMain) AddBridge(netns uint64, stag uint16, si vnet.Si, address net.HardwareAddr, puntIndex uint8) {
+	m.Validate()
+	var (
+		br *bridge
+		ok bool
+	)
+	if br, ok = m.bridges[stag]; !ok {
+		br = &bridge{}
+		m.bridges[stag] = br
+	}
+	br.netns = netns
+	br.si = si
+	br.address = address
+	br.puntIndex = puntIndex
+	fmt.Printf("AddBridge, len(bridges)=%v\n", len(m.bridges))
+	m.CallBridgeAddDelHooks(si, stag, br.puntIndex, br.address, true)
+}
+
+func (m *bridgeMain) DelBridge(stag uint16) {
+	m.Validate()
+	var (
+		br *bridge
+		ok bool
+	)
+	if br, ok = m.bridges[stag]; !ok {
+		//nothing to delete
+		return
+	}
+	m.CallBridgeAddDelHooks(br.si, stag, br.puntIndex, br.address, false)
+	delete(m.bridges, stag)
+}
+
+func (br *bridge) AddMember(pe *vnet.PortEntry) {
+	br.Validate()
+	if si, ok := vnet.SiByIfindex[pe.Ifindex]; ok {
+		br.members[si] = pe
+		return
+	}
+	panic(fmt.Errorf("bridge member ifindex %v has no valide si", pe.Ifindex))
+}
+
+func (br *bridge) DelMember(si vnet.Si) {
+	br.Validate()
+	if _, ok := br.members[si]; ok {
+		delete(br.members, si)
+	}
+}
+
+// Could collapse all vnet Hooks calls into this message
+// to avoid direct function calls from vnet to fe
+type SviVnetFeMsg struct {
+	data []byte
+}
+
+const (
+	MSG_FROM_VNET = iota
+	MSG_SVI_BRIDGE_ADD
+	MSG_SVI_BRIDGE_DELETE
+	MSG_SVI_BRIDGE_MEMBER_ADD
+	MSG_SVI_BRIDGE_MEMBER_DELETE
+)
+
+const (
+	MSG_FROM_FE = iota + 128
+	MSG_SVI_FDB_ADD
+	MSG_SVI_FDB_DELETE
+)
+
+type FromFeMsg struct {
+	MsgId    uint8
+	Addr     [6]uint8
+	Stag     uint16
+	PipePort uint16
+}
+
+var SviFromFeCh chan FromFeMsg // for l2-mod learning event reporting
 
 // in case we need bridge attributes beyond what's available in PortEntry
 type bridgeEntry struct {
@@ -88,8 +249,9 @@ func (br *bridgeEntry) LookupSiCtag(da Address, v *vnet.Vnet) (si vnet.Si, ctag 
 	hw_addr := make(net.HardwareAddr, 6)
 	hw_addr = da[:]
 
+	m := GetMain(v)
 	fdbBrm.stag = br.port.Stag
-	fdbBrm.pipe_port, err = v.BridgeMemberLookup(br.port.Stag, hw_addr)
+	fdbBrm.pipe_port, err = m.bridgeMemberLookup(br.port.Stag, hw_addr)
 	fdbBri = fdbBrmToBri[fdbBrm]
 	dbgvnet.Bridge.Logf("br fe1 lookup[%v] %+v=>%+v, err %v", hw_addr, fdbBrm, fdbBri, err)
 
@@ -159,6 +321,13 @@ func ProcessChangeUpper(msg *xeth.MsgChangeUpper, action vnet.ActionType, v *vne
 		return
 	}
 
+	m := GetMain(v)
+	if br, ok := m.bridges[portUpper.Stag]; ok {
+		si := vnet.SiByIfindex[portLower.Ifindex]
+		br.Validate()
+		br.members[si] = portLower
+	}
+
 	if msg.Linking == 0 {
 		if portLower.Stag != 0 {
 			fdbBrm.stag = portLower.Stag
@@ -167,8 +336,10 @@ func ProcessChangeUpper(msg *xeth.MsgChangeUpper, action vnet.ActionType, v *vne
 				dbgvnet.Bridge.Logf("brm del %+v, %+v, br.stag:%v, portvid:%v",
 					fdbBrm, fdbBri, brUpper.port.Stag, portLower.PortVid)
 				delete(fdbBrmToBri, fdbBrm)
-				v.BridgeMemberAddDelHook(fdbBrm.stag, vnet.SiByIfindex[fdbBri.memberIfindex],
+				m.CallBridgeMemberAddDelHooks(fdbBrm.stag, vnet.SiByIfindex[fdbBri.memberIfindex],
 					fdbBrm.pipe_port, portLower.Ctag, false, numBrmOnPort(fdbBri.portIfindex))
+				//v.BridgeMemberAddDelHook(fdbBrm.stag, vnet.SiByIfindex[fdbBri.memberIfindex],
+				//	fdbBrm.pipe_port, portLower.Ctag, false, numBrmOnPort(fdbBri.portIfindex))
 				portLower.Stag = 0
 				portLower.Devtype = xeth.XETH_DEVTYPE_LINUX_VLAN
 			} else {
@@ -195,8 +366,10 @@ func ProcessChangeUpper(msg *xeth.MsgChangeUpper, action vnet.ActionType, v *vne
 		// indexed by portvid/stag in map
 		portLower.Stag = brUpper.port.Stag
 
-		v.BridgeMemberAddDelHook(fdbBrm.stag, vnet.SiByIfindex[fdbBri.memberIfindex],
+		m.CallBridgeMemberAddDelHooks(fdbBrm.stag, vnet.SiByIfindex[fdbBri.memberIfindex],
 			fdbBrm.pipe_port, portLower.Ctag, true, numBrmOnPort(fdbBri.portIfindex))
+		//v.BridgeMemberAddDelHook(fdbBrm.stag, vnet.SiByIfindex[fdbBri.memberIfindex],
+		//	fdbBrm.pipe_port, portLower.Ctag, true, numBrmOnPort(fdbBri.portIfindex))
 		portLower.Devtype = xeth.XETH_DEVTYPE_LINUX_VLAN_BRIDGE_PORT
 	}
 	return
@@ -253,18 +426,18 @@ func goSviFromFe() {
 	var fdbBrm fdbBridgeMember
 	var fdbBri fdbBridgeIndex
 
-	for msg := range vnet.SviFromFeCh {
+	for msg := range SviFromFeCh {
 		br := bridgeByStag[msg.Stag]
 		if br == nil {
 			dbgvnet.Bridge.Logf("br not found %+v", msg)
 		} else {
 			switch {
-			case msg.MsgId == vnet.MSG_SVI_FDB_ADD:
+			case msg.MsgId == MSG_SVI_FDB_ADD:
 				fdbBrm.stag = msg.Stag
 				fdbBrm.pipe_port = msg.PipePort
 				fdbBri = fdbBrmToBri[fdbBrm]
 				br._macToIfindex[msg.Addr] = fdbBri.memberIfindex
-			case msg.MsgId == vnet.MSG_SVI_FDB_DELETE:
+			case msg.MsgId == MSG_SVI_FDB_DELETE:
 				delete(br._macToIfindex, msg.Addr)
 			}
 		}
@@ -273,8 +446,8 @@ func goSviFromFe() {
 
 // l2-mod-fifo learning, aging, and flush is posted async from fe1 to vnet
 func StartFromFeReceivers() {
-	if vnet.SviFromFeCh == nil {
-		vnet.SviFromFeCh = make(chan vnet.FromFeMsg, 32)
+	if SviFromFeCh == nil {
+		SviFromFeCh = make(chan FromFeMsg, 32)
 		go goSviFromFe()
 	}
 }
